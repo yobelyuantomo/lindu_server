@@ -246,11 +246,18 @@ def get_db_connection():
             except Exception:
                 print("[DB WARN] Koneksi basi terdeteksi! Membangun ulang Connection Pool...")
                 db_pool.closeall()
-                import psycopg2
-                import psycopg2.pool
-                from config import DB_HOST, DB_NAME, DB_USER, DB_PASS
-                db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+                # DB_HOST dan kawan-kawannya adalah global di modul ini, bukan
+                # di modul `config` — modul itu tidak pernah ada. Impor yang
+                # salah membuat pemulihan ini selalu gagal SETELAH closeall(),
+                # sehingga pool tertutup permanen dan setiap panggilan
+                # berikutnya berakhir "connection pool is closed". Gangguan
+                # koneksi sesaat berubah menjadi kegagalan total sampai proses
+                # di-restart manual.
+                db_pool = psycopg2.pool.ThreadedConnectionPool(
+                    1, 20, host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS
+                )
                 conn = db_pool.getconn()
+                print("[DB] Connection Pool berhasil dibangun ulang.")
             return conn
         except Exception as e:
             print("[DB ERROR] Gagal mengambil koneksi dari pool:", e)
