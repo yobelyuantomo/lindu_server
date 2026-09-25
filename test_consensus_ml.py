@@ -148,3 +148,110 @@ class TestPublishMlPrediction(unittest.TestCase):
         consensus.publish_ml_prediction(
             "NODE_A", {"label": "noise"}, {"decision": "normal"}, False,
         )
+
+
+class TestPemulihanConnectionPool(unittest.TestCase):
+    """Pool harus pulih dari KEDUA mode kegagalan, bukan hanya satu.
+
+    Satu kali gangguan database tidak boleh membuat server berhenti menyimpan
+    apa pun sampai di-restart manual.
+    """
+
+    def setUp(self):
+        self._pool_asli = consensus.db_pool
+        self._build_asli = consensus.build_pool
+
+    def tearDown(self):
+        consensus.db_pool = self._pool_asli
+        consensus.build_pool = self._build_asli
+
+    def test_pool_tertutup_dibangun_ulang(self):
+        """getconn() yang melempar dulu jatuh ke except luar tanpa rebuild."""
+        class PoolTertutup:
+            def getconn(self):
+                raise Exception("connection pool is closed")
+
+            def closeall(self):
+                pass
+
+        class KoneksiSehat:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, q):
+                return None
+
+        class PoolBaru:
+            def getconn(self):
+                return KoneksiSehat()
+
+        consensus.db_pool = PoolTertutup()
+        consensus.build_pool = lambda: PoolBaru()
+        self.assertIsNotNone(consensus.get_db_connection())
+
+    def test_gagal_rebuild_menyisakan_none_bukan_pool_rusak(self):
+        """Kunci pemulihan: panggilan BERIKUTNYA harus mencoba lagi.
+
+        Kalau db_pool dibiarkan menunjuk pool tertutup, sistem menyerah
+        selamanya walau database sudah hidup kembali.
+        """
+        class PoolTertutup:
+            def getconn(self):
+                raise Exception("connection pool is closed")
+
+            def closeall(self):
+                pass
+
+        consensus.db_pool = PoolTertutup()
+        consensus.build_pool = lambda: None
+
+        self.assertIsNone(consensus.get_db_connection())
+        self.assertIsNone(consensus.db_pool, "pool rusak harus dibuang, bukan disimpan")
+
+    def test_pool_none_dibangun_saat_dibutuhkan(self):
+        dipanggil = []
+
+        consensus.db_pool = None
+        consensus.build_pool = lambda: dipanggil.append(1) or None
+
+        consensus.get_db_connection()
+        self.assertEqual(len(dipanggil), 1)
+
+    def test_koneksi_basi_memicu_rebuild(self):
+        class KoneksiBasi:
+            def cursor(self):
+                raise Exception("server closed the connection unexpectedly")
+
+        class KoneksiSehat:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, q):
+                return None
+
+        class PoolBasi:
+            def getconn(self):
+                return KoneksiBasi()
+
+            def closeall(self):
+                pass
+
+        class PoolBaru:
+            def getconn(self):
+                return KoneksiSehat()
+
+        consensus.db_pool = PoolBasi()
+        consensus.build_pool = lambda: PoolBaru()
+        self.assertIsNotNone(consensus.get_db_connection())
