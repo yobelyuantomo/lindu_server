@@ -338,19 +338,26 @@ def on_message(client, userdata, msg):
         pga = payload.get("pga", 0)
         sta_lta = payload.get("sta_lta", 0)
         
-        freq_hz = payload.get("freq_hz", 0)
-        
+        freq_hz = payload.get("freq_hz")
+
+        # Simpan SETIAP pesan telemetri ke database (rekaman detik-per-detik)
+        # Termasuk data gas, cuaca, dll. Dilakukan sebelum filter apa pun supaya
+        # getaran non-gempa tetap terekam sebagai kelas negatif untuk dataset ML.
+        save_telemetry(payload)
+
+        # freq_hz yang hilang TIDAK boleh diperlakukan sebagai 0, karena 0 lolos
+        # filter `<= 20` sehingga payload tanpa frekuensi otomatis dianggap gempa.
+        # Pengecekan ditaruh setelah save_telemetry agar barisnya tetap tercatat.
+        if freq_hz is None:
+            print(f"[WARNING] Konsensus dilewati untuk {node_id}: node tidak mengirim freq_hz")
+            return
+
         # [ALGORITMA ANTI-HOAKS / FILTER GETARAN KAKI]
         # 1. PGA >= 0.12 (Getaran harus cukup keras)
         # 2. STA/LTA >= 2.0 (Energi getaran harus berkelanjutan, bukan benturan singkat)
         # 3. Frekuensi <= 20 Hz (Gelombang seismik bumi, bukan ketukan/hentakan sepatu yang tinggi)
-        # Simpan SETIAP pesan telemetri ke database (rekaman detik-per-detik)
-        # Termasuk data gas, cuaca, dll.
-        save_telemetry(payload)
-
-        # [ALGORITMA ANTI-HOAKS / FILTER GETARAN KAKI]
         is_real_quake = (pga >= 0.12 and sta_lta >= 2.0 and freq_hz <= 20)
-        
+
         if not is_real_quake:
             return # Buang hentakan kaki, buku jatuh, dan noise kecil
         
@@ -384,22 +391,7 @@ def on_message(client, userdata, msg):
         lon = payload.get("lon")
         
         if node_id and lat and lon:
-            # Simpan raw telemetry ke database
-            conn = get_db_connection()
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    cur.execute("""
-                        INSERT INTO tb_telemetry (node_id, pga, sta_lta, freq_hz)
-                        VALUES (%s, %s, %s, %s)
-                    """, (node_id, pga, payload.get("sta_lta", 0), payload.get("freq_hz", 0)))
-                    conn.commit()
-                    cur.close()
-                except Exception:
-                    pass
-                finally:
-                    release_db_connection(conn)
-            
+            # Telemetri sudah disimpan oleh save_telemetry() di atas.
             # Refine active earthquake if within 15 seconds window
             global active_quake
             if active_quake and (time.time() - active_quake["start_time"]) <= 15.0:
