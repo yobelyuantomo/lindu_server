@@ -5,6 +5,7 @@ lapisan ML tidak mengubah perilaku deteksi gempa**, dan bahwa kegagalan di
 lapisan itu tidak pernah merambat ke jalur alarm.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -90,3 +91,60 @@ class TestEngineTanpaModel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPublishMlPrediction(unittest.TestCase):
+    """Penyiaran prediksi tidak boleh bisa menjatuhkan jalur deteksi."""
+
+    def setUp(self):
+        self._asli = consensus.mqtt_client
+
+    def tearDown(self):
+        consensus.mqtt_client = self._asli
+
+    def test_tanpa_mqtt_client_tidak_melempar(self):
+        consensus.mqtt_client = None
+        consensus.publish_ml_prediction(
+            "NODE_A", {"label": "earthquake", "confidence": 0.9},
+            {"decision": "confirmed"}, True,
+        )
+
+    def test_payload_dan_topik(self):
+        terkirim = []
+
+        class MqttPalsu:
+            def publish(self, topic, payload):
+                terkirim.append((topic, payload))
+
+        consensus.mqtt_client = MqttPalsu()
+        consensus.publish_ml_prediction(
+            "NODE_A",
+            {"label": "earthquake", "confidence": 0.93,
+             "shadow_mode": True, "model_version": "v1"},
+            {"decision": "confirmed"}, True,
+        )
+
+        self.assertEqual(len(terkirim), 1)
+        topik, payload = terkirim[0]
+        self.assertEqual(topik, "lindu/ml/prediction/NODE_A")
+
+        data = json.loads(payload)
+        self.assertEqual(data["label"], "earthquake")
+        self.assertAlmostEqual(data["confidence"], 0.93)
+        self.assertTrue(data["shadow_mode"])
+        self.assertNotIn("features", data, "vektor fitur tidak boleh ikut disiarkan")
+
+    def test_topik_terpisah_dari_alarm(self):
+        """Menumpang di TOPIC_ALARM berisiko menyalakan sirine di node lama."""
+        self.assertNotEqual(consensus.TOPIC_ML_PREDICTION, consensus.TOPIC_ALARM)
+        self.assertFalse(consensus.TOPIC_ML_PREDICTION.startswith("lindu/actuator"))
+
+    def test_mqtt_meledak_tidak_melempar(self):
+        class MqttMeledak:
+            def publish(self, *a, **k):
+                raise RuntimeError("broker mati")
+
+        consensus.mqtt_client = MqttMeledak()
+        consensus.publish_ml_prediction(
+            "NODE_A", {"label": "noise"}, {"decision": "normal"}, False,
+        )
