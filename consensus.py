@@ -19,6 +19,12 @@ TOPIC_TELEMETRY = "lindu/sensor/+/telemetry"
 TOPIC_EXTERNAL  = "lindu/external/alert"
 TOPIC_ALARM  = "lindu/actuator/cmd/all"
 
+# Prediksi lapisan ML disiarkan di topik terpisah, bukan ditumpangkan pada
+# TOPIC_ALARM. Konsumen lama (firmware ESP32, dashboard versi lama) menyaring
+# payload di TOPIC_ALARM berdasarkan field `cmd`; menambahkan jenis pesan baru
+# di sana berisiko menyalakan sirine di node yang belum paham formatnya.
+TOPIC_ML_PREDICTION = "lindu/ml/prediction"
+
 # Konfigurasi Database
 DB_HOST = "grafana_postgres"
 DB_USER = "postgres"
@@ -288,6 +294,31 @@ def save_telemetry(payload):
     finally:
         release_db_connection(conn)
 
+def publish_ml_prediction(node_id, ml_result, keputusan, rule_passed):
+    """Siarkan prediksi ke dashboard lewat MQTT.
+
+    Payload sengaja ringkas: dikirim pada setiap jendela yang diinferensi,
+    yang pada kondisi terpicu berarti sampai 10 kali per detik per node.
+    Vektor fitur tidak ikut disertakan — untuk itu ada tb_ml_predictions.
+    """
+    if mqtt_client is None:
+        return
+    try:
+        payload = {
+            "node_id": node_id,
+            "label": ml_result.get("label"),
+            "confidence": ml_result.get("confidence"),
+            "decision": keputusan.get("decision"),
+            "rule_passed": rule_passed,
+            "shadow_mode": ml_result.get("shadow_mode", False),
+            "model_version": ml_result.get("model_version"),
+            "ts": time.time(),
+        }
+        mqtt_client.publish(f"{TOPIC_ML_PREDICTION}/{node_id}", json.dumps(payload))
+    except Exception as e:
+        print(f"[ML Publish Error] {e}")
+
+
 def save_ml_prediction(node_id, ml_result, keputusan, rule_passed):
     """Catat hasil prediksi ML beserta keputusan gabungannya.
 
@@ -473,6 +504,7 @@ def on_message(client, userdata, msg):
 
                 keputusan = combine_verdicts(is_real_quake, hasil_ml, ML_CONFIDENCE_MIN)
                 save_ml_prediction(node_id, hasil_ml, keputusan, is_real_quake)
+                publish_ml_prediction(node_id, hasil_ml, keputusan, is_real_quake)
                 print(
                     f"[ML] {node_id} | {hasil_ml['label']} "
                     f"({(hasil_ml.get('confidence') or 0):.2f}) | "
