@@ -117,9 +117,23 @@ def init_db():
                 az FLOAT,
                 lat DOUBLE PRECISION,
                 lon DOUBLE PRECISION,
-                uptime_ms BIGINT
+                uptime_ms BIGINT,
+                gas_raw INTEGER,
+                gas_alert BOOLEAN,
+                door_status VARCHAR(16),
+                valve_status VARCHAR(16)
             );
         """)
+
+        # Kolom di bawah ditambahkan setelah tabel ini dipakai di lapangan.
+        # CREATE TABLE IF NOT EXISTS tidak menyentuh tabel yang sudah ada, jadi
+        # tanpa ALTER ini save_telemetry() gagal pada SETIAP baris dengan
+        # "column gas_raw does not exist" — dan kegagalannya hanya muncul di log,
+        # sehingga tabel tetap kosong tanpa ada yang menyadari.
+        cur.execute("ALTER TABLE tb_sensor_telemetry ADD COLUMN IF NOT EXISTS gas_raw INTEGER;")
+        cur.execute("ALTER TABLE tb_sensor_telemetry ADD COLUMN IF NOT EXISTS gas_alert BOOLEAN;")
+        cur.execute("ALTER TABLE tb_sensor_telemetry ADD COLUMN IF NOT EXISTS door_status VARCHAR(16);")
+        cur.execute("ALTER TABLE tb_sensor_telemetry ADD COLUMN IF NOT EXISTS valve_status VARCHAR(16);")
         
         # Tabel Event Ringkasan (Saat Konsensus Tercapai)
         cur.execute("""
