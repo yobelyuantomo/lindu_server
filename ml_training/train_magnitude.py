@@ -201,13 +201,18 @@ def main(argv=None):
     model.fit(X_latih, y_latih)
     prediksi = list(model.predict(X_uji))
 
+    # model.predict() mengembalikan numpy.float64, dan perbandingan di antaranya
+    # menghasilkan numpy.bool_ yang BUKAN turunan bool bawaan Python sehingga
+    # json.dump menolaknya. Dikonversi di sini supaya metadata tetap tertulis.
+    prediksi = [float(v) for v in prediksi]
+
     hasil = {
-        "pga_mae": mae(y_uji, prediksi),
-        "pga_rmse": rmse(y_uji, prediksi),
-        "magnitudo_mae": mae(
+        "pga_mae": float(mae(y_uji, prediksi)),
+        "pga_rmse": float(rmse(y_uji, prediksi)),
+        "magnitudo_mae": float(mae(
             [formula_magnitudo(v) for v in y_uji],
             [formula_magnitudo(v) for v in prediksi],
-        ),
+        )),
     }
     print("\n=== Model (GradientBoostingRegressor) ===")
     for k, v in hasil.items():
@@ -232,7 +237,7 @@ def main(argv=None):
         "n_test_events": len(uji),
         "model_report": hasil,
         "baselines": dasar,
-        "beats_persistence": perbaikan > 0,
+        "beats_persistence": bool(perbaikan > 0),
     }
     with open(os.path.join(args.models_dir, META_FILENAME), "w", encoding="utf-8") as handle:
         json.dump(meta, handle, indent=2, ensure_ascii=False)

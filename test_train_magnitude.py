@@ -128,3 +128,28 @@ class TestEvaluateBaselines(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMetadataJsonSerializable(unittest.TestCase):
+    """Regresi: numpy.bool_ bukan turunan bool, json.dump menolaknya.
+
+    Gejalanya menyesatkan — pelatihan terlihat sukses dan mencetak seluruh
+    metrik, tetapi metadata tidak pernah tertulis ke disk.
+    """
+
+    def test_bool_numpy_dikonversi(self):
+        import json
+
+        import numpy as np
+
+        perbaikan = np.float64(0.05)
+        with self.assertRaises(TypeError):
+            json.dumps({"beats": perbaikan > 0})
+        json.dumps({"beats": bool(perbaikan > 0)})
+
+    def test_float_numpy_bisa_diserialisasi_setelah_dikonversi(self):
+        import json
+
+        import numpy as np
+
+        json.dumps({"mae": float(np.float64(0.123))})
