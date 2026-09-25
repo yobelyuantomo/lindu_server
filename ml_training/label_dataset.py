@@ -61,11 +61,19 @@ def parse_row(raw):
 
 
 def build_session_index(sessions):
-    """Kelompokkan sesi per node agar pencarian tidak menyapu seluruh daftar."""
+    """Kelompokkan sesi per node agar pencarian tidak menyapu seluruh daftar.
+
+    Setiap sesi diberi ``session_id`` stabil berdasarkan urutan (node, waktu
+    mulai). Id ini dipakai ``build_dataset.py`` untuk memecah data per
+    kejadian, sehingga jendela dari satu sesi yang sama tidak pernah tersebar
+    ke train dan test sekaligus.
+    """
     index = {}
-    for s in sessions:
+    urut = sorted(sessions, key=lambda s: (s["node_id"], float(s["start_ts"])))
+    for nomor, s in enumerate(urut, start=1):
         index.setdefault(s["node_id"], []).append(
             {
+                "session_id": f"S{nomor:03d}",
                 "label": s["label"],
                 "scenario": s.get("scenario", ""),
                 "start_ts": float(s["start_ts"]),
@@ -77,14 +85,20 @@ def build_session_index(sessions):
     return index
 
 
-def label_for(index, node_id, sensor_ts):
-    """Cari label untuk satu baris. ``None`` bila di luar seluruh sesi."""
+def session_for(index, node_id, sensor_ts):
+    """Cari sesi yang memuat satu baris. ``None`` bila di luar seluruh sesi."""
     if sensor_ts is None:
         return None
     for s in index.get(node_id, ()):
         if s["start_ts"] <= sensor_ts < s["end_ts"]:
-            return s["label"]
+            return s
     return None
+
+
+def label_for(index, node_id, sensor_ts):
+    """Cari label untuk satu baris. ``None`` bila di luar seluruh sesi."""
+    sesi = session_for(index, node_id, sensor_ts)
+    return sesi["label"] if sesi else None
 
 
 def label_rows(rows, index):
@@ -94,12 +108,14 @@ def label_rows(rows, index):
     """
     labeled, dibuang = [], 0
     for row in rows:
-        label = label_for(index, row.get("node_id"), row.get("sensor_ts"))
-        if label is None:
+        sesi = session_for(index, row.get("node_id"), row.get("sensor_ts"))
+        if sesi is None:
             dibuang += 1
             continue
         out = dict(row)
-        out["label"] = label
+        out["label"] = sesi["label"]
+        out["session_id"] = sesi["session_id"]
+        out["scenario"] = sesi["scenario"]
         labeled.append(out)
     return labeled, dibuang
 
@@ -206,7 +222,9 @@ def main(argv=None):
     _print_summary(labeled, dibuang, layak, tidak_terpicu)
 
     if not args.summary:
-        jumlah = write_labeled(labeled, args.out, fieldnames + ["label"])
+        jumlah = write_labeled(
+            labeled, args.out, fieldnames + ["label", "session_id", "scenario"]
+        )
         print(f"\n[OK] {jumlah} baris berlabel ditulis ke {args.out}")
     return 0
 
