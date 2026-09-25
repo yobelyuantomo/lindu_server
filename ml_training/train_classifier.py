@@ -106,6 +106,21 @@ def train_and_select(train_rows, val_rows, seed=DEFAULT_SEED):
     return model_terbaik, terbaik, hasil
 
 
+def build_feature_baselines(rows):
+    """Histogram distribusi tiap fitur pada data latih.
+
+    Dipakai ``ml/drift_monitor.py`` untuk mendeteksi pergeseran kondisi
+    lapangan. Baris augmentasi ikut disertakan karena baseline harus
+    mencerminkan distribusi yang benar-benar dilihat model saat fit.
+    """
+    from ml.drift_monitor import build_baseline
+
+    return {
+        nama: build_baseline([r.get(nama) for r in rows])
+        for nama in FEATURE_NAMES
+    }
+
+
 def feature_importance(model):
     """Kepentingan fitur, bila model mendukungnya."""
     nilai = getattr(model, "feature_importances_", None)
@@ -174,6 +189,9 @@ def main(argv=None):
         "test_report": laporan_test,
         "feature_importance": feature_importance(model),
         "selection_metric": "macro_f1 pada split val",
+        # Histogram distribusi fitur saat pelatihan. Disimpan di sini supaya
+        # runtime bisa mendeteksi drift tanpa perlu memuat ulang dataset latih.
+        "feature_baselines": build_feature_baselines(train_rows),
     }
     meta_path = os.path.join(args.models_dir, META_FILENAME)
     with open(meta_path, "w", encoding="utf-8") as handle:
