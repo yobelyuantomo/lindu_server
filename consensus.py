@@ -26,10 +26,47 @@ DB_PASS = "postgres"
 DB_NAME = "lindu_db"
 
 # In-Memory Database (Cache Cepat agar tidak lag saat gempa)
-node_registry = {} 
+node_registry = {}
 trigger_buffer = []
 active_quake = None
 mqtt_client = None
+
+# ==========================================
+# LAPISAN KECERDASAN (Assignment 3)
+# ==========================================
+# Dimuat saat startup. Bila gagal, ml_engine tetap None dan seluruh jalur
+# deteksi berjalan persis seperti Assignment 2 — lihat init_ml().
+ml_engine = None
+
+# Shadow mode: prediksi dicatat penuh tetapi TIDAK BOLEH memicu aktuator.
+# Ini mode default saat pertama kali deploy, supaya model bisa dievaluasi pada
+# data live nyata tanpa risiko operasional. Baru dimatikan setelah metriknya
+# terbukti pada data lapangan.
+ML_SHADOW_MODE = os.getenv("ML_SHADOW_MODE", "true").lower() != "false"
+ML_CONFIDENCE_MIN = float(os.getenv("ML_CONFIDENCE_MIN", "0.75"))
+
+
+def init_ml():
+    """Muat model klasifikasi. Kegagalan tidak fatal."""
+    global ml_engine
+    try:
+        from ml.inference_engine import InferenceEngine
+
+        engine = InferenceEngine(shadow_mode=ML_SHADOW_MODE)
+        if engine.load():
+            ml_engine = engine
+            print(f"[ML] Model dimuat. Versi: {engine.model_version}")
+            print(f"[ML] Shadow mode: {'AKTIF' if ML_SHADOW_MODE else 'MATI'}")
+            if ML_SHADOW_MODE:
+                print("[ML] Prediksi dicatat tetapi TIDAK memicu aktuator.")
+        else:
+            ml_engine = None
+            print(f"[ML] Tidak aktif: {engine.load_error}")
+            print("[ML] Sistem berjalan dengan rule-based saja (perilaku Assignment 2).")
+    except Exception as e:
+        ml_engine = None
+        print(f"[ML] Tidak aktif karena kesalahan tak terduga: {e}")
+        print("[ML] Sistem berjalan dengan rule-based saja (perilaku Assignment 2).")
 
 def init_db():
     try:
@@ -118,6 +155,34 @@ def init_db():
                 message TEXT
             );
         """)
+
+        # Prediksi lapisan ML (Assignment 3). Dicatat untuk setiap jendela yang
+        # sempat diinferensi, termasuk saat shadow mode aktif — justru di mode
+        # itulah datanya paling dibutuhkan untuk mengevaluasi model pada data
+        # live tanpa memberinya wewenang apa pun atas aktuator.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tb_ml_predictions (
+                ts TIMESTAMPTZ(3) NOT NULL DEFAULT NOW(),
+                node_id VARCHAR(32),
+                label VARCHAR(32),
+                confidence REAL,
+                magnitude_pred REAL,
+                anomaly_score REAL,
+                lead_time_pred REAL,
+                model_version VARCHAR(64),
+                latency_ms REAL,
+                over_budget BOOLEAN,
+                shadow_mode BOOLEAN,
+                rule_passed BOOLEAN,
+                decision VARCHAR(32),
+                trigger_actuator BOOLEAN,
+                features JSONB
+            );
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ml_predictions_ts "
+            "ON tb_ml_predictions (ts DESC);"
+        )
         print("[DB] Semua tabel dipastikan ada.")
         
         # Load memori dari DB agar tidak amnesia setelah restart
@@ -222,6 +287,44 @@ def save_telemetry(payload):
         print(f"[DB Telemetry Error] {e}")
     finally:
         release_db_connection(conn)
+
+def save_ml_prediction(node_id, ml_result, keputusan, rule_passed):
+    """Catat hasil prediksi ML beserta keputusan gabungannya.
+
+    Sengaja tidak pernah melempar: kegagalan mencatat prediksi tidak boleh
+    menjatuhkan jalur deteksi gempa.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO tb_ml_predictions (
+                node_id, label, confidence, model_version, latency_ms,
+                over_budget, shadow_mode, rule_passed, decision,
+                trigger_actuator, features
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """, (
+            node_id,
+            ml_result.get("label"),
+            ml_result.get("confidence"),
+            ml_result.get("model_version"),
+            ml_result.get("latency_ms"),
+            ml_result.get("over_budget", False),
+            ml_result.get("shadow_mode", False),
+            rule_passed,
+            keputusan.get("decision"),
+            keputusan.get("trigger_actuator", False),
+            json.dumps(ml_result.get("features") or {}),
+        ))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        print(f"[DB ML Error] {e}")
+    finally:
+        release_db_connection(conn)
+
 
 def save_alert(alarm_payload):
     """Simpan riwayat alarm ke database (Black Box)."""
@@ -358,9 +461,38 @@ def on_message(client, userdata, msg):
         # 3. Frekuensi <= 20 Hz (Gelombang seismik bumi, bukan ketukan/hentakan sepatu yang tinggi)
         is_real_quake = (pga >= 0.12 and sta_lta >= 2.0 and freq_hz <= 20)
 
+        # ===== LAPISAN KECERDASAN (Assignment 3) =====
+        # Dijalankan BERDAMPINGAN dengan filter di atas, bukan menggantikannya.
+        # is_real_quake sudah selesai dihitung sebelum baris ini, jadi jalur
+        # rule-based tidak pernah menunggu hasil inferensi.
+        keputusan = None
+        if ml_engine is not None:
+            hasil_ml = ml_engine.predict(payload)
+            if hasil_ml.get("available"):
+                from ml.inference_engine import combine_verdicts
+
+                keputusan = combine_verdicts(is_real_quake, hasil_ml, ML_CONFIDENCE_MIN)
+                save_ml_prediction(node_id, hasil_ml, keputusan, is_real_quake)
+                print(
+                    f"[ML] {node_id} | {hasil_ml['label']} "
+                    f"({(hasil_ml.get('confidence') or 0):.2f}) | "
+                    f"{hasil_ml['latency_ms']:.1f}ms | -> {keputusan['decision']}"
+                )
+
         if not is_real_quake:
+            # ML boleh mendeteksi lebih dulu, tetapi tidak diberi wewenang
+            # memicu konsensus sendirian: fisika P-Wave antar-node tetap
+            # menjadi syarat. Kejadiannya sudah tercatat di tb_ml_predictions.
+            if keputusan and keputusan["decision"] == "ml_early_detection":
+                print(f"[ML] Deteksi dini pada {node_id}, menunggu konfirmasi rule-based/node lain")
             return # Buang hentakan kaki, buku jatuh, dan noise kecil
-        
+
+        # Rule-based lolos tetapi ML menilai ini bukan gempa. Konsensus tetap
+        # dijalankan (ML tidak boleh MEMBATALKAN alarm), namun saat shadow mode
+        # MATI, dugaan false positive ini dicatat agar bisa ditinjau.
+        if keputusan and keputusan["decision"] == "suspected_false_positive":
+            print(f"[ML] Dugaan false positive pada {node_id}: {keputusan['reason']}")
+
         # Gunakan koordinat dari payload jika ada, fallback ke registry
         lat = payload.get("lat")
         lon = payload.get("lon")
@@ -757,7 +889,11 @@ if __name__ == "__main__":
     
     # Inisialisasi Database (Load memori)
     init_db()
-    
+
+    # Muat lapisan kecerdasan. Gagal di sini tidak fatal: sistem otomatis
+    # berjalan dengan rule-based saja, persis seperti Assignment 2.
+    init_ml()
+
     # Setup MQTT
     mqtt_client = mqtt.Client("LinduServer_01")
     mqtt_client.on_connect = on_connect
