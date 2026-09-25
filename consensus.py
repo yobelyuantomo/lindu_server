@@ -794,10 +794,34 @@ def fire_alarm(client, t1, t2, velocity, time_diff):
     
     # Radius Bahaya Dinamis Berdasarkan Magnitudo
     dynamic_radius = round(10 ** (0.5 * magnitude - 1.0), 1)
-    
+
+    # Estimasi kedua dari model: perkiraan PGA PUNCAK yang akan dicapai
+    # kejadian ini, dihitung dari detik-detik pertamanya. Formula di atas
+    # memakai PGA yang SUDAH terlihat, sehingga selalu meremehkan gempa yang
+    # masih menguat.
+    #
+    # Ditampilkan BERDAMPINGAN, tidak menggantikan. `magnitude` tetap menjadi
+    # satu-satunya nilai yang menentukan radius dan perilaku aktuator, supaya
+    # perilaku sistem tidak berubah hanya karena sebuah model dimuat.
+    magnitude_ml = None
+    if ml_engine is not None:
+        try:
+            jendela = ml_engine.current_window(t1["node_id"])
+            if jendela:
+                from ml.feature_extractor import extract_features
+
+                puncak = ml_engine.estimate_peak_pga(extract_features(jendela))
+                if puncak is not None:
+                    aman = max(0.001, puncak)
+                    nilai = round(5.0 + 1.5 * math.log10(aman / 0.1), 1)
+                    magnitude_ml = max(3.0, min(9.5, nilai))
+        except Exception as e:
+            print(f"[ML] Estimasi magnitudo dilewati: {e}")
+
     alarm_payload = {
         "cmd": "trigger_siren",
         "level": "CRITICAL",
+        "magnitude_ml": magnitude_ml,
         "epicenter_lat": epi_lat,
         "epicenter_lon": epi_lon,
         "radius_km": dynamic_radius,

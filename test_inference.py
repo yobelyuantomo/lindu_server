@@ -244,3 +244,48 @@ class TestCombineVerdicts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEstimasiMagnitudo(unittest.TestCase):
+    """T3.5 — estimasi puncak guncangan sebagai pelengkap, bukan pengganti."""
+
+    def test_tanpa_model_mengembalikan_none(self):
+        engine = InferenceEngine()
+        self.assertIsNone(engine.estimate_peak_pga({"pga_max": 0.5}))
+
+    def test_fitur_kosong_mengembalikan_none(self):
+        engine = InferenceEngine()
+        engine._magnitude_model = object()
+        self.assertIsNone(engine.estimate_peak_pga({}))
+        self.assertIsNone(engine.estimate_peak_pga(None))
+
+    def test_model_meledak_tidak_melempar(self):
+        class Meledak:
+            def predict(self, X):
+                raise RuntimeError("model regresi rusak")
+
+        engine = InferenceEngine()
+        engine._magnitude_model = Meledak()
+        fitur = {n: 1.0 for n in FEATURE_NAMES}
+        self.assertIsNone(engine.estimate_peak_pga(fitur))
+
+    def test_mengembalikan_nilai_dari_model(self):
+        class Tetap:
+            def predict(self, X):
+                return [0.87]
+
+        engine = InferenceEngine()
+        engine._magnitude_model = Tetap()
+        fitur = {n: 1.0 for n in FEATURE_NAMES}
+        self.assertAlmostEqual(engine.estimate_peak_pga(fitur), 0.87)
+
+    def test_metadata_fitur_tidak_cocok_model_tidak_dimuat(self):
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "magnitude.joblib"), "w").close()
+            with open(os.path.join(tmp, "magnitude_meta.json"), "w", encoding="utf-8") as h:
+                _json.dump({"feature_names": ["a", "b"]}, h)
+            engine = InferenceEngine(models_dir=tmp)
+            engine._load_magnitude()
+            self.assertIsNone(engine._magnitude_model)
