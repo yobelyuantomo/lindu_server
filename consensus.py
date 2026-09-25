@@ -157,6 +157,17 @@ def init_db():
         cur.execute("ALTER TABLE tb_system_alerts ADD COLUMN IF NOT EXISTS triggering_nodes JSONB;")
         cur.execute("ALTER TABLE tb_system_alerts ADD COLUMN IF NOT EXISTS seismic_details JSONB;")
         
+        # tb_nodes dibuat oleh DUA komponen dengan skema berbeda: init.sql milik
+        # grafana-stack (node_id, lat, lon, updated_at) dan init_db() di sini
+        # (node_id, role, lat, lon, registered_at, last_seen). Yang berjalan
+        # lebih dulu menentukan bentuk tabelnya, dan CREATE TABLE IF NOT EXISTS
+        # milik yang kedua menjadi tidak berarti.
+        #
+        # Karena init.sql hanya jalan sekali saat volume dibuat, urutannya tidak
+        # bisa diandalkan. Ketiga kolom yang hanya dikenal di sini karena itu
+        # ditambahkan lewat ALTER, bukan hanya last_seen seperti sebelumnya.
+        cur.execute("ALTER TABLE tb_nodes ADD COLUMN IF NOT EXISTS role VARCHAR(16);")
+        cur.execute("ALTER TABLE tb_nodes ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ DEFAULT NOW();")
         cur.execute("ALTER TABLE tb_nodes ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ DEFAULT NOW();")
         
         cur.execute("""
