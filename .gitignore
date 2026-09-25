@@ -1,0 +1,16 @@
+# Bytecode Python
+__pycache__/
+*.py[cod]
+
+# Artefak pelatihan model. Model dan dataset berubah jauh lebih sering
+# daripada kode, ukurannya besar, dan hasilnya bisa dibangun ulang dari
+# ml_training/. Yang perlu dilacak adalah SKRIP-nya, bukan keluarannya.
+ml/models/*.joblib
+ml/models/*_meta.json
+data/
+reports/
+
+# Virtualenv & cache pengujian
+.venv/
+venv/
+.pytest_cache/
