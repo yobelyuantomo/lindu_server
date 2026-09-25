@@ -104,8 +104,22 @@ def simulate():
         for _ in range(15):
             time.sleep(1)
             new_pga = pga_base * random.uniform(0.8, 1.5)
-            client.publish(f'lindu/sensor/{node_id}/telemetry', json.dumps({'node_id': node_id, 'pga': new_pga, 'rms': new_pga * random.uniform(0.3, 0.6), 'lat': coords['lat'], 'lon': coords['lon']}))
-            
+            # sta_lta dan freq_hz WAJIB dikirim. Server menolak telemetri tanpa
+            # freq_hz sejak nilai yang hilang berhenti diperlakukan sebagai 0
+            # (0 lolos filter `<= 20` sehingga payload tanpa frekuensi otomatis
+            # dianggap gempa). Tanpa keduanya, simulator ini tidak pernah
+            # memicu konsensus dan hasilnya menyesatkan.
+            client.publish(f'lindu/sensor/{node_id}/telemetry', json.dumps({
+                'node_id': node_id,
+                'ts': time.time(),
+                'pga': new_pga,
+                'rms': new_pga * random.uniform(0.3, 0.6),
+                'sta_lta': random.uniform(2.5, 6.0),
+                'freq_hz': random.uniform(3.0, 12.0),
+                'ax': new_pga * 0.7, 'ay': new_pga * 0.5, 'az': new_pga * 0.1,
+                'lat': coords['lat'], 'lon': coords['lon'],
+            }))
+
     ts_current = int(time.time())
     
     for i, event in enumerate(scenario["events"]):
