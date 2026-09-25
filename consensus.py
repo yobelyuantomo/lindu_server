@@ -234,35 +234,83 @@ try:
 except Exception as e:
     print("Gagal membuat Connection Pool:", e)
 
+def build_pool():
+    """Bangun connection pool baru. Mengembalikan None bila gagal."""
+    try:
+        return psycopg2.pool.ThreadedConnectionPool(
+            1, 20, host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS
+        )
+    except Exception as e:
+        print(f"[DB] Gagal membangun Connection Pool: {e}")
+        return None
+
+
 def get_db_connection():
+    """Ambil koneksi sehat dari pool, membangun ulang pool bila perlu.
+
+    Ada DUA cara pool bisa rusak, dan keduanya harus ditangani:
+
+    1. Koneksi di dalam pool basi — getconn() berhasil tetapi query gagal.
+    2. Pool-nya sendiri sudah tertutup — getconn() yang melempar.
+
+    Penanganan sebelumnya hanya menutup kasus pertama. Pada kasus kedua,
+    pengecualiannya jatuh ke except luar dan pool tidak pernah dibangun ulang,
+    sehingga satu kali gangguan membuat server berhenti menyimpan apa pun
+    sampai di-restart manual.
+
+    Kunci lainnya: bila pembangunan ulang gagal (database memang sedang mati),
+    db_pool diset None, BUKAN dibiarkan menunjuk pool tertutup. Dengan begitu
+    panggilan berikutnya mencoba lagi alih-alih menyerah selamanya.
+    """
     global db_pool
-    if db_pool:
+
+    if db_pool is None:
+        db_pool = build_pool()
+        if db_pool is None:
+            return None
+
+    try:
+        conn = db_pool.getconn()
+    except Exception as e:
+        print(f"[DB WARN] Pool tidak bisa dipakai ({e}). Membangun ulang...")
+        try:
+            db_pool.closeall()
+        except Exception:
+            pass
+        db_pool = build_pool()
+        if db_pool is None:
+            return None
         try:
             conn = db_pool.getconn()
-            # PING TEST: Pastikan koneksi tidak basi (stale)
-            try:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT 1")
-            except Exception:
-                print("[DB WARN] Koneksi basi terdeteksi! Membangun ulang Connection Pool...")
-                db_pool.closeall()
-                # DB_HOST dan kawan-kawannya adalah global di modul ini, bukan
-                # di modul `config` — modul itu tidak pernah ada. Impor yang
-                # salah membuat pemulihan ini selalu gagal SETELAH closeall(),
-                # sehingga pool tertutup permanen dan setiap panggilan
-                # berikutnya berakhir "connection pool is closed". Gangguan
-                # koneksi sesaat berubah menjadi kegagalan total sampai proses
-                # di-restart manual.
-                db_pool = psycopg2.pool.ThreadedConnectionPool(
-                    1, 20, host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS
-                )
-                conn = db_pool.getconn()
-                print("[DB] Connection Pool berhasil dibangun ulang.")
+            print("[DB] Connection Pool berhasil dibangun ulang.")
+        except Exception as e2:
+            print(f"[DB ERROR] Masih gagal setelah dibangun ulang: {e2}")
+            db_pool = None
+            return None
+
+    # PING TEST: Pastikan koneksi tidak basi (stale)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        return conn
+    except Exception:
+        print("[DB WARN] Koneksi basi terdeteksi! Membangun ulang Connection Pool...")
+        try:
+            db_pool.closeall()
+        except Exception:
+            pass
+        db_pool = build_pool()
+        if db_pool is None:
+            return None
+        try:
+            conn = db_pool.getconn()
+            print("[DB] Connection Pool berhasil dibangun ulang.")
             return conn
         except Exception as e:
-            print("[DB ERROR] Gagal mengambil koneksi dari pool:", e)
+            print(f"[DB ERROR] Gagal mengambil koneksi setelah rebuild: {e}")
+            db_pool = None
             return None
-    return None
+
 
 def release_db_connection(conn):
     if db_pool and conn:
