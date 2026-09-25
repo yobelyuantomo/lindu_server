@@ -40,6 +40,8 @@ from ml.feature_extractor import (
 DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 MODEL_FILENAME = "classifier.joblib"
 META_FILENAME = "model_meta.json"
+MAGNITUDE_FILENAME = "magnitude.joblib"
+MAGNITUDE_META_FILENAME = "magnitude_meta.json"
 
 #: Anggaran latensi inferensi. Di atas ini hasil ditandai over_budget.
 LATENCY_BUDGET_MS = 50.0
@@ -85,6 +87,7 @@ class InferenceEngine:
         self._buffers = {}
         self._model = None
         self._meta = None
+        self._magnitude_model = None
         self._load_error = None
         self._stats = {"predictions": 0, "fallbacks": 0, "over_budget": 0}
 
@@ -134,7 +137,44 @@ class InferenceEngine:
 
         self._meta = meta
         self._load_error = None
+        self._load_magnitude()
         return True
+
+    def _load_magnitude(self):
+        """Muat model estimasi puncak guncangan, bila ada.
+
+        Sepenuhnya opsional: classifier tetap berfungsi tanpanya, dan
+        kegagalan di sini tidak boleh membatalkan pemuatan classifier yang
+        sudah berhasil.
+        """
+        model_path = os.path.join(self.models_dir, MAGNITUDE_FILENAME)
+        meta_path = os.path.join(self.models_dir, MAGNITUDE_META_FILENAME)
+        if not (os.path.exists(model_path) and os.path.exists(meta_path)):
+            return
+        try:
+            with open(meta_path, encoding="utf-8") as handle:
+                meta = json.load(handle)
+            if meta.get("feature_names") != list(FEATURE_NAMES):
+                return
+            import joblib
+
+            self._magnitude_model = joblib.load(model_path)
+        except Exception:  # noqa: BLE001 - estimasi magnitudo bersifat tambahan
+            self._magnitude_model = None
+
+    def estimate_peak_pga(self, features):
+        """Perkirakan PGA puncak yang akan dicapai kejadian ini.
+
+        Mengembalikan ``None`` bila model tidak tersedia. Tidak pernah melempar:
+        estimasi ini melengkapi formula lama, tidak menggantikannya.
+        """
+        if self._magnitude_model is None or not features:
+            return None
+        try:
+            vektor = features_to_vector(features)
+            return float(self._magnitude_model.predict([vektor])[0])
+        except Exception:  # noqa: BLE001
+            return None
 
     @property
     def ready(self):
