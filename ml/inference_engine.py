@@ -52,6 +52,29 @@ LATENCY_BUDGET_MS = 50.0
 MAX_ROWS_PER_NODE = 200
 
 
+def payload_to_row(payload):
+    """Petakan payload MQTT telemetri ke baris fitur.
+
+    Payload memakai kunci ``ax``/``ay``/``az`` sementara fitur memakai
+    ``accel_x``/``accel_y``/``accel_z``. Satu-satunya tempat pemetaan ini
+    didefinisikan; ``ml_training/ml_selftest.py`` memakainya juga supaya yang
+    dibandingkan dengan firmware adalah baris yang persis sama dengan yang
+    dilihat mesin inferensi.
+    """
+    return {
+        "sensor_ts": payload.get("ts"),
+        "pga": payload.get("pga"),
+        "sta_lta": payload.get("sta_lta"),
+        "freq_hz": payload.get("freq_hz"),
+        "accel_x": payload.get("ax", payload.get("accel_x")),
+        "accel_y": payload.get("ay", payload.get("accel_y")),
+        "accel_z": payload.get("az", payload.get("accel_z")),
+        "temperature": payload.get("temperature"),
+        "pressure": payload.get("pressure"),
+        "gas_raw": payload.get("gas_raw"),
+    }
+
+
 class InferenceResult(dict):
     """Hasil prediksi. Turunan dict agar mudah diserialisasi ke database."""
 
@@ -201,18 +224,7 @@ class InferenceEngine:
         if not node_id:
             return None
 
-        row = {
-            "sensor_ts": payload.get("ts"),
-            "pga": payload.get("pga"),
-            "sta_lta": payload.get("sta_lta"),
-            "freq_hz": payload.get("freq_hz"),
-            "accel_x": payload.get("ax", payload.get("accel_x")),
-            "accel_y": payload.get("ay", payload.get("accel_y")),
-            "accel_z": payload.get("az", payload.get("accel_z")),
-            "temperature": payload.get("temperature"),
-            "pressure": payload.get("pressure"),
-            "gas_raw": payload.get("gas_raw"),
-        }
+        row = payload_to_row(payload)
         buffer = self._buffers.setdefault(node_id, deque(maxlen=MAX_ROWS_PER_NODE))
         buffer.append(row)
         return row
